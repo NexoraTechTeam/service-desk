@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>fake academy host</title>
+  <link rel="icon" href="data:,"></head>
+<body>
+  <!-- Mimics academy's DOM contract (tests/helpers.py in the academy repo):
+       menu = text of every `aside nav button`; account button carries the
+       logged-in user's name. -->
+  <aside>
+    <nav>
+      <button class="active">Dashboard</button>
+      <button>My Trainings</button>
+      <button>Reports</button>
+    </nav>
+  </aside>
+  <header>
+    <button id="account">Dinda Pramesti</button>
+  </header>
+  <main id="main-content">Dashboard content</main>
+
+  <script type="module">
+    import { mount } from '/core/rr-vanilla.js';
+
+    const FAKE_CHECK_AREAS = [
+      ['navReachable', 'Nav reachable', 'Every registered menu item resolves to real content.'],
+      ['zeroConsoleErrors', 'Zero console errors', 'The widget never emits console.error.'],
+    ];
+
+    function buildContext() {
+      const active = document.querySelector('aside nav button.active');
+      return {
+        project: 'fake-academy',
+        route: active ? active.textContent : null,
+        screen: active ? active.textContent : null,
+        reviewer: { name: document.getElementById('account').textContent, title: 'Participant', role: 'participant' },
+      };
+    }
+
+    function answerQuestion(question, ctx) {
+      if (question.toLowerCase().includes('readiness')) {
+        return { answer: 'fake readiness answer', sources: ['FAKE'], classification: 'ANSWERED_FROM_SOURCE' };
+      }
+      return { answer: 'fake clarification', sources: [], classification: 'CLARIFICATION_NEEDED' };
+    }
+
+    window.__widget = mount({
+      project: 'fake-academy',
+      environment: 'test',
+      prototypeVersion: 'fixture-1',
+      feedbackApp: 'academy',
+      container: document.body,
+      buildContext,
+      answerQuestion,
+      checkAreas: FAKE_CHECK_AREAS,
+      onNavigate: (route) => {
+        const btn = [...document.querySelectorAll('aside nav button')].find((b) => b.textContent === route);
+        if (btn) btn.click();
+      },
+    });
+    window.__mounted = true;
+  </script>
+</body>
+</html>

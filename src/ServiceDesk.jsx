@@ -11,6 +11,20 @@ import {
   Lock, EyeOff, Trash2, Copy,
 } from "lucide-react";
 
+// AI Assistant review widget (rollout plan Fase 4) — additive, isolated in
+// src/widget/; the in-app AI Assist (parseAIQuery) is untouched.
+import ReadinessWidget from "./widget/ReadinessWidget";
+import { buildContext } from "./widget/contextAdapter";
+
+// The feedback collector only exists behind the /servicedesk/ nginx vhost.
+// Anywhere else (file://, local Vite/Playwright) a POST would fail and the
+// BROWSER would log it — so queue locally but transmit only on the real
+// deployment (mirrors academy's collectorIsReachable()).
+const COLLECTOR_ENABLED =
+  typeof window !== "undefined" &&
+  /^https?:$/.test(window.location.protocol) &&
+  window.location.pathname.startsWith("/servicedesk/");
+
 /* ----------------------------------------------------------------------
    SAMPLE TENANT DATA — Nusantara Digital Group (fictional demo tenant)
 ---------------------------------------------------------------------- */
@@ -67,6 +81,7 @@ const TEAMS = [
 const TEAM_MEMBERSHIPS_SEED = [
   { user: "Dewi Anjani", teamId: "team-it", roleInTeam: "Agent", effectiveFrom: "2025-01-01", effectiveUntil: "2025-12-31" },
   { user: "Dewi Anjani", teamId: "team-legal", roleInTeam: "Agent", effectiveFrom: "2026-01-01", effectiveUntil: null },
+  { user: "Bagus Setiawan", teamId: "team-legal", roleInTeam: "Agent", effectiveFrom: "2026-03-01", effectiveUntil: null },
   { user: "Rina Wulandari", teamId: "team-privacy", roleInTeam: "Agent", effectiveFrom: "2026-02-01", effectiveUntil: null },
   { user: "Rina Wulandari", teamId: "team-vendor-risk", roleInTeam: "Agent", effectiveFrom: "2026-02-01", effectiveUntil: null },
   // Baseline staffing for the remaining teams, so the one gap the
@@ -78,6 +93,20 @@ const TEAM_MEMBERSHIPS_SEED = [
   { user: "Maya Kartika", teamId: "team-finance", roleInTeam: "Agent", effectiveFrom: "2025-01-01", effectiveUntil: null },
   { user: "Agus Pranoto", teamId: "team-procurement", roleInTeam: "Agent", effectiveFrom: "2025-01-01", effectiveUntil: null },
   { user: "Hendra Wibowo", teamId: "team-secops", roleInTeam: "Agent", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  // Manager-level oversight membership — not a fulfillment role, so it
+  // never counts toward Coverage Gaps (which checks roleInTeam === "Agent"
+  // specifically). This is what lets one Manager identity preview any
+  // existing department's dashboard, the same way Agent Workspace lets
+  // one identity preview any team it's actually a member of.
+  { user: "Rangga Pratama", teamId: "team-it", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-ga", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-hr", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-legal", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-finance", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-procurement", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-secops", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-privacy", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
+  { user: "Rangga Pratama", teamId: "team-vendor-risk", roleInTeam: "Manager", effectiveFrom: "2025-01-01", effectiveUntil: null },
 ];
 
 function isMembershipActive(m, asOfIso) {
@@ -292,6 +321,7 @@ const INITIAL_SERVICES = [
       { name: "notes", label: "Additional Notes", type: "textarea" },
     ],
     recordType: "Service Request",
+    producesDocument: true,
     approvalRequired: true, approverType: "HR",
     assignmentGroup: "HR Service Team",
     visibilityScope: "all", visibleDepartments: [],
@@ -321,6 +351,7 @@ const INITIAL_SERVICES = [
     icon: FileSearch,
     formFields: null,
     recordType: "Service Request",
+    producesDocument: true,
     approvalRequired: true, approverType: "Legal",
     assignmentGroup: "Legal Contracts",
     visibilityScope: "all", visibleDepartments: [],
@@ -334,6 +365,7 @@ const INITIAL_SERVICES = [
     icon: FileLock2,
     formFields: null,
     recordType: "Service Request",
+    producesDocument: true,
     approvalRequired: true, approverType: "Legal",
     assignmentGroup: "Legal Contracts",
     visibilityScope: "all", visibleDepartments: [],
@@ -477,6 +509,7 @@ const INITIAL_SERVICES = [
     icon: ShieldAlert,
     formFields: null,
     recordType: "Service Request",
+    producesDocument: true,
     approvalRequired: true, approverType: "Security",
     assignmentGroup: "Third-Party Security Review",
     visibilityScope: "all", visibleDepartments: [],
@@ -495,6 +528,7 @@ const INITIAL_SERVICES = [
       { name: "notes", label: "Notes for the Reviewer", type: "textarea" },
     ],
     recordType: "Service Request",
+    producesDocument: true,
     approvalRequired: true, approverType: "Legal / Board (per Reviewer selected)",
     assignmentGroup: "Legal Advisory",
     visibilityScope: "all", visibleDepartments: [],
@@ -708,18 +742,19 @@ function buildInitialSlaPolicy(services) {
 }
 
 const INITIAL_REQUESTS = [
-  { id: "REQ-2026-0142", service: "IT Incident", title: "Cannot connect to office WiFi", submitted: "Sep 9, 2026", status: "In Progress", sla: "On Track", assignee: "IT Service Desk", priority: "Medium", requester: "Bima Saputra" },
-  { id: "REQ-2026-0139", service: "Laptop / Device Request", title: "Replacement laptop — screen flickering", submitted: "Sep 5, 2026", status: "Pending Approval", sla: "On Track", assignee: "—", priority: "Medium", requester: "Bima Saputra" },
-  { id: "REQ-2026-0121", service: "HR Employment Letter", title: "Employment letter for visa application", submitted: "Aug 28, 2026", status: "Closed", sla: "Breached", assignee: "HR Service Team", priority: "Low", requester: "Bima Saputra" },
-  { id: "REQ-2026-0118", service: "Facility Maintenance", title: "AC unit leaking — 8th floor east wing", submitted: "Aug 25, 2026", status: "Resolved", sla: "Met", assignee: "GA Facilities", priority: "Medium", requester: "Bima Saputra" },
-  { id: "REQ-2026-0098", service: "Software / License Request", title: "Figma seat request", submitted: "Aug 12, 2026", status: "Closed", sla: "Met", assignee: "IT Procurement", priority: "Low", requester: "Bima Saputra" },
-  { id: "REQ-2026-0145", service: "Software / License Request", title: "Adobe Creative Cloud seat request", submitted: "Sep 10, 2026", status: "Pending Approval", sla: "On Track", assignee: "—", priority: "Medium", requester: "Sri Handayani" },
-  { id: "REQ-2026-0136", service: "Company Vehicle Booking", title: "Client visit to Surabaya", submitted: "Sep 8, 2026", status: "Pending Approval", sla: "On Track", assignee: "—", priority: "Medium", requester: "Fajar Nugroho" },
-  { id: "REQ-2026-0130", service: "IT Incident", title: "Printer on 5th floor not responding", submitted: "Sep 7, 2026", status: "Submitted", sla: "At Risk", assignee: "—", priority: "High", requester: "Sri Handayani" },
-  { id: "REQ-2026-0125", service: "System Access Request", title: "Access to Finance reporting dashboard", submitted: "Sep 4, 2026", status: "Approved", sla: "On Track", assignee: "—", priority: "Medium", requester: "Fajar Nugroho" },
-  { id: "REQ-2026-0148", service: "Contract Review", title: "Review reseller agreement with PT Cahaya Mitra", submitted: "Sep 11, 2026", status: "Approved", sla: "On Track", assignee: "—", priority: "Medium", requester: "Fajar Nugroho" },
-  { id: "REQ-2026-0149", service: "Privacy Inquiry", title: "Question on customer data retention period", submitted: "Sep 12, 2026", status: "Submitted", sla: "On Track", assignee: "—", priority: "Low", requester: "Sri Handayani" },
-  { id: "REQ-2026-0150", service: "Vendor Security Review", title: "Security assessment for new analytics vendor", submitted: "Sep 10, 2026", status: "Approved", sla: "At Risk", assignee: "—", priority: "High", requester: "Bima Saputra" },
+  { id: "REQ-2026-0142", service: "IT Incident", title: "Cannot connect to office WiFi", submitted: "Sep 9, 2026", status: "In Progress", sla: "On Track", assignee: "IT Service Desk", priority: "Medium", requester: "Bima Saputra" , statusHistory: [{"status":"Submitted","at":"Sep 9, 2026, 9:14 AM"},{"status":"Assigned","at":"Sep 9, 2026, 11:02 AM"},{"status":"In Progress","at":"Sep 10, 2026, 9:30 AM"}] },
+  { id: "REQ-2026-0139", service: "Laptop / Device Request", title: "Replacement laptop — screen flickering", submitted: "Sep 5, 2026", status: "Pending Approval", sla: "On Track", assignee: "—", priority: "Medium", requester: "Bima Saputra" , statusHistory: [{"status":"Submitted","at":"Sep 5, 2026, 2:45 PM"},{"status":"Pending Approval","at":"Sep 5, 2026, 2:45 PM"}] },
+  { id: "REQ-2026-0121", service: "HR Employment Letter", title: "Employment letter for visa application", submitted: "Aug 28, 2026", status: "Closed", sla: "Breached", assignee: "HR Service Team", priority: "Low", requester: "Bima Saputra", responseAttachmentName: "Employment_Letter_Bima_Saputra_Visa.pdf", responseDocumentLink: "https://drive.google.com/hr-employment-letter-bima-saputra-visa" , statusHistory: [{"status":"Submitted","at":"Aug 28, 2026, 10:20 AM"},{"status":"Pending Approval","at":"Aug 28, 2026, 10:20 AM"},{"status":"Approved","at":"Aug 29, 2026, 3:15 PM"},{"status":"Assigned","at":"Aug 31, 2026, 9:00 AM"},{"status":"In Progress","at":"Sep 2, 2026, 9:00 AM"},{"status":"Resolved","at":"Sep 8, 2026, 4:40 PM"},{"status":"Closed","at":"Sep 9, 2026, 10:00 AM"}] },
+  { id: "REQ-2026-0118", service: "Facility Maintenance", title: "AC unit leaking — 8th floor east wing", submitted: "Aug 25, 2026", status: "Resolved", sla: "Met", assignee: "GA Facilities", priority: "Medium", requester: "Bima Saputra" , statusHistory: [{"status":"Submitted","at":"Aug 25, 2026, 8:05 AM"},{"status":"Assigned","at":"Aug 25, 2026, 9:40 AM"},{"status":"In Progress","at":"Aug 25, 2026, 1:15 PM"},{"status":"Resolved","at":"Aug 26, 2026, 11:00 AM"}] },
+  { id: "REQ-2026-0098", service: "Software / License Request", title: "Figma seat request", submitted: "Aug 12, 2026", status: "Closed", sla: "Met", assignee: "IT Procurement", priority: "Low", requester: "Bima Saputra" , statusHistory: [{"status":"Submitted","at":"Aug 12, 2026, 9:00 AM"},{"status":"Pending Approval","at":"Aug 12, 2026, 9:00 AM"},{"status":"Approved","at":"Aug 13, 2026, 10:30 AM"},{"status":"Assigned","at":"Aug 14, 2026, 9:00 AM"},{"status":"In Progress","at":"Aug 15, 2026, 9:00 AM"},{"status":"Resolved","at":"Aug 18, 2026, 3:00 PM"},{"status":"Closed","at":"Aug 19, 2026, 9:00 AM"}] },
+  { id: "REQ-2026-0145", service: "Software / License Request", title: "Adobe Creative Cloud seat request", submitted: "Sep 10, 2026", status: "Pending Approval", sla: "On Track", assignee: "—", priority: "Medium", requester: "Sri Handayani" , statusHistory: [{"status":"Submitted","at":"Sep 10, 2026, 1:20 PM"},{"status":"Pending Approval","at":"Sep 10, 2026, 1:20 PM"}] },
+  { id: "REQ-2026-0136", service: "Company Vehicle Booking", title: "Client visit to Surabaya", submitted: "Sep 8, 2026", status: "Pending Approval", sla: "On Track", assignee: "—", priority: "Medium", requester: "Fajar Nugroho", neededBy: "2026-10-01" , statusHistory: [{"status":"Submitted","at":"Sep 8, 2026, 4:00 PM"},{"status":"Pending Approval","at":"Sep 8, 2026, 4:00 PM"}] },
+  { id: "REQ-2026-0130", service: "IT Incident", title: "Printer on 5th floor not responding", submitted: "Sep 7, 2026", status: "Submitted", sla: "At Risk", assignee: "—", priority: "High", requester: "Sri Handayani", neededBy: "2026-09-25" , statusHistory: [{"status":"Submitted","at":"Sep 7, 2026, 8:50 AM"}] },
+  { id: "REQ-2026-0125", service: "System Access Request", title: "Access to Finance reporting dashboard", submitted: "Sep 4, 2026", status: "Approved", sla: "On Track", assignee: "—", priority: "Medium", requester: "Fajar Nugroho" , statusHistory: [{"status":"Submitted","at":"Sep 4, 2026, 11:00 AM"},{"status":"Pending Approval","at":"Sep 4, 2026, 11:00 AM"},{"status":"Approved","at":"Sep 5, 2026, 2:30 PM"}] },
+  { id: "REQ-2026-0148", service: "Contract Review", title: "Review reseller agreement with PT Cahaya Mitra", submitted: "Sep 11, 2026", status: "Approved", sla: "On Track", assignee: "—", priority: "Medium", requester: "Fajar Nugroho", neededBy: "2026-09-20", documentLink: "https://drive.google.com/reseller-agreement-cahaya-mitra" , statusHistory: [{"status":"Submitted","at":"Sep 11, 2026, 10:00 AM"},{"status":"Pending Approval","at":"Sep 11, 2026, 10:00 AM"},{"status":"Approved","at":"Sep 12, 2026, 9:15 AM"}] },
+  { id: "REQ-2026-0149", service: "Privacy Inquiry", title: "Question on customer data retention period", submitted: "Sep 12, 2026", status: "Submitted", sla: "On Track", assignee: "—", priority: "Low", requester: "Sri Handayani" , statusHistory: [{"status":"Submitted","at":"Sep 12, 2026, 3:30 PM"}] },
+  { id: "REQ-2026-0150", service: "Vendor Security Review", title: "Security assessment for new analytics vendor", submitted: "Sep 10, 2026", status: "Approved", sla: "At Risk", assignee: "—", priority: "High", requester: "Bima Saputra" , statusHistory: [{"status":"Submitted","at":"Sep 10, 2026, 9:00 AM"},{"status":"Pending Approval","at":"Sep 10, 2026, 9:00 AM"},{"status":"Approved","at":"Sep 11, 2026, 4:00 PM"}] },
+  { id: "REQ-2026-0151", service: "Contract Review", title: "Review Contract Nexora Tech", submitted: "Sep 20, 2026", status: "Approved", sla: "On Track", assignee: "—", priority: "Medium", requester: "Bima Saputra", attachmentName: "Review_Contract_Nexora_Tech.pdf", documentLink: "https://drive.google.com/review-contract-nexora-tech", neededBy: "2026-10-05", statusHistory: [{"status":"Submitted","at":"Sep 20, 2026, 9:00 AM"},{"status":"Pending Approval","at":"Sep 20, 2026, 9:00 AM"},{"status":"Approved","at":"Sep 22, 2026, 11:30 AM"}] },
 ];
 
 const INITIAL_BOOKINGS = [
@@ -817,6 +852,14 @@ function tomorrowISO() {
 
 function todayLabel() {
   return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Real timestamp for status-history entries created during this session —
+// as opposed to the seed data's backfilled history, which is stated
+// plausible history, not a real log (there was nothing to log before the
+// app existed).
+function nowTimestamp() {
+  return new Date().toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function greeting() {
@@ -1176,9 +1219,10 @@ function getPersonaUser(persona, agentIdentityName) {
   return PERSONA_USERS[persona];
 }
 
-function Sidebar({ view, goTo, onSignOut, persona, switchPersona, agentIdentityName, setAgentIdentityName }) {
+function Sidebar({ view, goTo, onSignOut, persona, switchPersona, agentIdentityName, setAgentIdentityName, managerTeamScope, setManagerTeamScope, memberships }) {
   const navItems = NAV_ITEMS_BY_PERSONA[persona];
   const personaUser = getPersonaUser(persona, agentIdentityName);
+  const managerTeams = persona === "manager" ? getAuthorizedTeams(MANAGER_USER.name, memberships) : [];
   return (
     <div className="w-64 shrink-0 bg-slate-900 text-slate-300 flex flex-col h-screen sticky top-0">
       <div className="flex items-center gap-3 px-5 py-5">
@@ -1212,6 +1256,20 @@ function Sidebar({ view, goTo, onSignOut, persona, switchPersona, agentIdentityN
           >
             {AGENT_IDENTITIES.map((a) => <option key={a.name} value={a.name}>{a.name} — {a.title}</option>)}
           </select>
+        </div>
+      )}
+      {persona === "manager" && (
+        <div className="px-3 pb-3">
+          <p className="text-xs text-slate-500 px-2 mb-1.5">Preview as Department</p>
+          <select
+            className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-2 focus:outline-none"
+            value={managerTeamScope}
+            onChange={(e) => setManagerTeamScope(e.target.value)}
+          >
+            <option value="combined">All Departments (combined)</option>
+            {managerTeams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <p className="text-xs text-slate-600 px-2 mt-1.5">Marketing not shown — no live team yet.</p>
         </div>
       )}
       <nav className="flex-1 px-3 py-2 space-y-1">
@@ -1554,6 +1612,7 @@ function ServiceDetailPage({ serviceId, prefill, goTo, onCreateRequest, slaPolic
     return initial;
   });
   const [attachedFile, setAttachedFile] = useState(null);
+  const [neededBy, setNeededBy] = useState(prefill.neededBy || "");
 
   function setValue(name, value) {
     setValues((v) => ({ ...v, [name]: value }));
@@ -1577,6 +1636,7 @@ function ServiceDetailPage({ serviceId, prefill, goTo, onCreateRequest, slaPolic
       priority: values.priority || values.urgency || "Medium",
       attachmentName: attachedFile ? attachedFile.name : "",
       documentLink: linkField ? values[linkField.name] : "",
+      neededBy,
     });
     goTo("requestDetail", { requestId: req.id, prefill: { backTo: "myRequests" } });
   }
@@ -1617,6 +1677,9 @@ function ServiceDetailPage({ serviceId, prefill, goTo, onCreateRequest, slaPolic
               {f.type === "link" && <TextInput type="url" placeholder="https://drive.google.com/..." value={values[f.name]} onChange={(e) => setValue(f.name, e.target.value)} />}
             </Field>
           ))}
+          <Field label="When do you need this by?" hint="Helps the fulfilling team set priority and urgency — not a guaranteed date, but a real signal of how time-sensitive this is.">
+            <TextInput type="date" value={neededBy} onChange={(e) => setNeededBy(e.target.value)} />
+          </Field>
           <Field label="Attach a file (optional)">
             {attachedFile ? (
               <div className="flex items-center gap-2 text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
@@ -1696,19 +1759,29 @@ function MessageIcon() {
   return <div className="w-5 h-5 rounded-full bg-slate-100 flex items-center justify-center shrink-0 mt-0.5"><Info className="w-3 h-3 text-slate-400" /></div>;
 }
 
-function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, services, agentIdentityName, memberships, onApprove, onReject, onRequestInfo, onAssignToMe, onAdvanceStatus, onCloseRequest, onReopenRequest, onToast }) {
+function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, services, agentIdentityName, memberships, onApprove, onReject, onRequestInfo, onAssignToMe, onReassign, onAdvanceStatus, onCloseRequest, onReopenRequest, onAttachResponse, onToast }) {
   const request = requests.find((r) => r.id === requestId) || requests[0];
+  const requestService = services.find((s) => s.name === request.service);
   const isTerminalNegative = ["Rejected", "Cancelled"].includes(request.status);
   const steps = getLifecycleSteps(request.service, services);
   const currentIndex = steps.indexOf(request.status);
   const requesterInfo = REQUESTER_INFO[request.requester];
   const backTo = (prefill && prefill.backTo) || "myRequests";
+  const hasResponseDoc = !!(request.responseAttachmentName || request.responseDocumentLink);
+  const owningTeam = requestService && TEAMS.find((t) => t.assignmentGroups.includes(requestService.assignmentGroup));
+  const todayIsoForTeam = new Date().toISOString().slice(0, 10);
+  const reassignTargets = owningTeam
+    ? memberships.filter((m) => m.teamId === owningTeam.id && isMembershipActive(m, todayIsoForTeam) && m.user !== agentIdentityName)
+    : [];
 
   const [delegating, setDelegating] = useState(false);
   const [delegateName, setDelegateName] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiSummary, setAiSummary] = useState(null);
   const [aiSuggestion, setAiSuggestion] = useState(null);
+  const [responseFile, setResponseFile] = useState(null);
+  const [responseLink, setResponseLink] = useState("");
+  const [responseSent, setResponseSent] = useState(false);
 
   const RESOLUTION_SUGGESTIONS = {
     "IT Incident": "Confirm the device is on the ‘Nusantara-Corp’ network profile and reset the network adapter. Escalate to the Network team if the issue persists.",
@@ -1743,7 +1816,6 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
   // trusting the list filter alone. In production this check is backend-
   // authoritative regardless of what the frontend does or doesn't render.
   if (viewer === "agent") {
-    const requestService = services.find((s) => s.name === request.service);
     const authorizedGroups = Array.from(new Set(getAuthorizedTeams(agentIdentityName, memberships).flatMap((t) => t.assignmentGroups)));
     const isAuthorized = requestService && authorizedGroups.includes(requestService.assignmentGroup);
     if (!isAuthorized) {
@@ -1794,11 +1866,11 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
               </div>
               {delegating && (
                 <div className="flex items-center gap-2 pt-3 mt-3 border-t border-slate-100">
-                  <Select options={["Rina Kartika (Acting Manager)"]} value={delegateName} onChange={(e) => setDelegateName(e.target.value)} />
+                  <Select options={["Sinta Marlina (Acting Manager)"]} value={delegateName} onChange={(e) => setDelegateName(e.target.value)} />
                   <Button
                     variant="secondary"
                     onClick={() => {
-                      onToast(`${request.id} delegated to ${delegateName || "Rina Kartika (Acting Manager)"}`);
+                      onToast(`${request.id} delegated to ${delegateName || "Sinta Marlina (Acting Manager)"}`);
                       setDelegating(false);
                     }}
                   >
@@ -1812,15 +1884,40 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
           {viewer === "agent" && (
             <Card className="p-5">
               <p className="text-sm font-semibold text-slate-700 mb-3">Agent Actions</p>
-              <div className="flex flex-wrap items-center gap-2 mb-4">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
                 {request.assignee !== agentIdentityName && (
                   <Button variant="secondary" onClick={() => onAssignToMe(request.id)}>Assign to Me</Button>
                 )}
                 {!["Resolved", "Closed", "Rejected", "Cancelled"].includes(request.status) && (
-                  <Select options={steps.filter((s) => s !== "Closed")} value={request.status} onChange={(e) => onAdvanceStatus(request.id, e.target.value)} />
+                  <Select
+                    options={steps.filter((s) => s !== "Closed")}
+                    value={request.status}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (next === "Resolved" && requestService && requestService.producesDocument && !hasResponseDoc) {
+                        onToast("Attach or link the finished document below before marking this Resolved — the requester needs a way to get it besides email.");
+                        return;
+                      }
+                      onAdvanceStatus(request.id, next);
+                    }}
+                  />
                 )}
                 {request.status === "Resolved" && (
                   <span className="text-xs text-slate-500 flex items-center gap-1"><Info className="w-3.5 h-3.5" /> Waiting on the requester to confirm and close</span>
+                )}
+              </div>
+              <div className="mb-4">
+                {reassignTargets.length > 0 ? (
+                  <select
+                    className={inputClass}
+                    value=""
+                    onChange={(e) => { if (e.target.value) onReassign(request.id, e.target.value); }}
+                  >
+                    <option value="">Reassign to teammate or manager…</option>
+                    {reassignTargets.map((m) => <option key={m.user} value={m.user}>{m.user} ({m.roleInTeam}{m.roleInTeam === "Manager" ? " — escalate" : ""})</option>)}
+                  </select>
+                ) : (
+                  <p className="text-xs text-slate-400">No other active member on {owningTeam ? owningTeam.name : "this team"} to hand off to right now.</p>
                 )}
               </div>
               <div className="h-px bg-slate-100 mb-4" />
@@ -1837,6 +1934,52 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
               )}
               {aiSummary && <div className="text-sm text-slate-700 bg-indigo-50 border border-indigo-100 rounded-lg p-3">{aiSummary}</div>}
               {aiSuggestion && <div className="text-sm text-slate-700 bg-indigo-50 border border-indigo-100 rounded-lg p-3">{aiSuggestion}</div>}
+
+              {(request.attachmentName || request.documentLink) && (
+                <>
+                  <div className="h-px bg-slate-100 my-4" />
+                  <p className="text-sm font-medium text-slate-700 mb-2">Requester's Document</p>
+                  {request.attachmentName && (
+                    <div className="flex items-center gap-2 text-sm text-slate-700 mb-1">
+                      <Paperclip className="w-3.5 h-3.5 text-slate-400 shrink-0" /> <span className="truncate">{request.attachmentName}</span>
+                    </div>
+                  )}
+                  {request.documentLink && (
+                    <a href={request.documentLink} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm text-indigo-700 hover:underline">
+                      <FileSearch className="w-3.5 h-3.5 shrink-0" /> Open and review
+                    </a>
+                  )}
+                </>
+              )}
+
+              <div className="h-px bg-slate-100 my-4" />
+              <p className="text-sm font-medium text-slate-700 mb-2">
+                Send Document Back to Requester
+                {requestService && requestService.producesDocument && !hasResponseDoc && (
+                  <span className="text-rose-600 font-normal"> — required before Resolved</span>
+                )}
+              </p>
+              <div className="mb-2"><TextInput type="url" placeholder="Link to the reviewed / signed document" value={responseLink} onChange={(e) => setResponseLink(e.target.value)} /></div>
+              {responseFile ? (
+                <div className="flex items-center gap-2 text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-2">
+                  <Paperclip className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span className="truncate flex-1">{responseFile.name}</span>
+                  <button onClick={() => setResponseFile(null)} className="text-slate-400 hover:text-rose-600"><X className="w-3.5 h-3.5" /></button>
+                </div>
+              ) : (
+                <label className="flex items-center gap-2 text-sm text-slate-500 border border-dashed border-slate-300 rounded-lg px-3 py-2 cursor-pointer hover:border-indigo-300 hover:text-indigo-700 mb-2">
+                  <Paperclip className="w-3.5 h-3.5 shrink-0" /> Choose a file
+                  <input type="file" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; setResponseFile(f ? { name: f.name } : null); }} />
+                </label>
+              )}
+              <Button
+                variant="secondary"
+                disabled={!responseFile && !responseLink}
+                onClick={() => { onAttachResponse(request.id, { name: responseFile ? responseFile.name : "", link: responseLink }); setResponseSent(true); }}
+              >
+                Send to Requester
+              </Button>
+              {responseSent && <p className="text-xs text-emerald-600 mt-2">Sent — visible on the requester's Request Detail now.</p>}
             </Card>
           )}
 
@@ -1851,13 +1994,17 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
                 {steps.map((step, i) => {
                   const done = i < currentIndex || (i === currentIndex && request.status === "Closed");
                   const current = i === currentIndex && request.status !== "Closed";
+                  const historyEntry = (request.statusHistory || []).find((h) => h.status === step);
                   return (
                     <div key={step} className="flex gap-3">
                       <div className="flex flex-col items-center">
                         {done ? <CheckCircle2 className="w-5 h-5 text-emerald-600" /> : <Circle className={`w-5 h-5 ${current ? "text-indigo-600" : "text-slate-300"}`} />}
                         {i < steps.length - 1 && <div className={`w-px flex-1 min-h-[20px] ${done ? "bg-emerald-200" : "bg-slate-200"}`} />}
                       </div>
-                      <p className={`text-sm pb-5 ${current ? "text-slate-900 font-medium" : done ? "text-slate-600" : "text-slate-400"}`}>{step}</p>
+                      <div className="flex items-baseline justify-between flex-1 pb-5">
+                        <p className={`text-sm ${current ? "text-slate-900 font-medium" : done ? "text-slate-600" : "text-slate-400"}`}>{step}</p>
+                        {historyEntry && <p className="text-xs text-slate-400 shrink-0 ml-3">{historyEntry.at}</p>}
+                      </div>
                     </div>
                   );
                 })}
@@ -1881,11 +2028,19 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
               <div className="flex justify-between"><dt className="text-slate-500">Assignee</dt><dd className="text-slate-800">{request.assignee}</dd></div>
               <div className="flex justify-between"><dt className="text-slate-500">SLA</dt><dd><Badge label={request.sla} /></dd></div>
               <div className="flex justify-between"><dt className="text-slate-500">Submitted</dt><dd className="text-slate-800">{request.submitted}</dd></div>
+              {request.neededBy && (
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">Needed By</dt>
+                  <dd className={daysAgo(request.neededBy) >= 0 && !["Resolved", "Closed", "Completed", "Rejected", "Cancelled"].includes(request.status) ? "text-rose-600 font-medium" : "text-slate-800"}>
+                    {request.neededBy}
+                  </dd>
+                </div>
+              )}
             </dl>
           </Card>
           {(request.attachmentName || request.documentLink) && (
             <Card className="p-5">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Attachments</p>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Requester's Document</p>
               {request.attachmentName && (
                 <div className="flex items-center gap-2 text-sm text-slate-700 mb-2">
                   <Paperclip className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -1896,6 +2051,23 @@ function RequestDetailPage({ requestId, requests, goTo, prefill, viewer, service
                 <a href={request.documentLink} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm text-indigo-700 hover:underline">
                   <FileSearch className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">Open linked document</span>
+                </a>
+              )}
+            </Card>
+          )}
+          {(request.responseAttachmentName || request.responseDocumentLink) && (
+            <Card className="p-5 border-emerald-200">
+              <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-3">Returned by {request.assignee}</p>
+              {request.responseAttachmentName && (
+                <div className="flex items-center gap-2 text-sm text-slate-700 mb-2">
+                  <Paperclip className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span className="truncate">{request.responseAttachmentName}</span>
+                </div>
+              )}
+              {request.responseDocumentLink && (
+                <a href={request.responseDocumentLink} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm text-indigo-700 hover:underline">
+                  <FileSearch className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Open returned document</span>
                 </a>
               )}
             </Card>
@@ -2099,58 +2271,87 @@ function VehicleBookingPage({ prefill, goTo, onCreateBooking, onCreateRequest })
    MANAGER PORTAL
 ---------------------------------------------------------------------- */
 
-function ManagerHomePage({ requests, goTo, services, memberships }) {
+function ManagerHomePage({ requests, goTo, services, memberships, managerTeamScope, setManagerTeamScope }) {
+  const authorizedTeams = getAuthorizedTeams(MANAGER_USER.name, memberships);
+
+  function inManagerScope(r) {
+    const svc = services.find((s) => s.name === r.service);
+    if (!svc) return false;
+    if (managerTeamScope === "combined") {
+      return authorizedTeams.some((t) => t.assignmentGroups.includes(svc.assignmentGroup));
+    }
+    const team = authorizedTeams.find((t) => t.id === managerTeamScope);
+    return team ? team.assignmentGroups.includes(svc.assignmentGroup) : false;
+  }
+  const scopedRequests = requests.filter(inManagerScope);
+
   const now = new Date();
-  const thisMonth = requests.filter((r) => isThisMonth(r.submitted));
+  const thisMonth = scopedRequests.filter((r) => isThisMonth(r.submitted));
   const lastMonthRef = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const lastMonthCount = requests.filter((r) => {
+  const lastMonthCount = scopedRequests.filter((r) => {
     const d = new Date(r.submitted);
     return d.getMonth() === lastMonthRef.getMonth() && d.getFullYear() === lastMonthRef.getFullYear();
   }).length;
   const lastYearRef = new Date(now.getFullYear() - 1, now.getMonth(), 1);
-  const lastYearCount = requests.filter((r) => {
+  const lastYearCount = scopedRequests.filter((r) => {
     const d = new Date(r.submitted);
     return d.getMonth() === lastYearRef.getMonth() && d.getFullYear() === lastYearRef.getFullYear();
   }).length;
 
-  const open = requests.filter((r) => !["Completed", "Closed", "Rejected", "Cancelled"].includes(r.status));
-  const inProgress = requests.filter((r) => r.status === "In Progress");
-  const closed = requests.filter((r) => ["Completed", "Closed"].includes(r.status));
-  const pendingApproval = requests.filter((r) => r.status === "Pending Approval");
-  const rejected = requests.filter((r) => r.status === "Rejected");
-  const slaMet = requests.filter((r) => r.sla === "Met");
-  const slaBreached = requests.filter((r) => r.sla === "Breached");
-  const slaAtRisk = requests.filter((r) => r.sla === "At Risk");
-  const awaitingConfirmation = requests.filter((r) => r.status === "Resolved");
+  const open = scopedRequests.filter((r) => !["Completed", "Closed", "Rejected", "Cancelled"].includes(r.status));
+  const inProgress = scopedRequests.filter((r) => r.status === "In Progress");
+  const closed = scopedRequests.filter((r) => ["Completed", "Closed"].includes(r.status));
+  const pendingApproval = scopedRequests.filter((r) => r.status === "Pending Approval");
+  const rejected = scopedRequests.filter((r) => r.status === "Rejected");
+  const slaMet = scopedRequests.filter((r) => r.sla === "Met");
+  const slaBreached = scopedRequests.filter((r) => r.sla === "Breached");
+  const slaAtRisk = scopedRequests.filter((r) => r.sla === "At Risk");
+  const awaitingConfirmation = scopedRequests.filter((r) => r.status === "Resolved");
 
   function recordTypeOf(r) {
     const svc = services.find((s) => s.name === r.service);
     return svc ? svc.recordType : "Service Request";
   }
-  const incidentCount = requests.filter((r) => recordTypeOf(r) === "Incident").length;
-  const serviceRequestCount = requests.filter((r) => recordTypeOf(r) === "Service Request").length;
+  const incidentCount = scopedRequests.filter((r) => recordTypeOf(r) === "Incident").length;
+  const serviceRequestCount = scopedRequests.filter((r) => recordTypeOf(r) === "Service Request").length;
 
   // Requests that are ready for an agent but have sat unassigned for a
   // while — the "about to be missed" signal, at the request level.
-  const agingUnassigned = requests.filter(
+  const agingUnassigned = scopedRequests.filter(
     (r) => ["Submitted", "Approved"].includes(r.status) && r.assignee === "—" && daysAgo(r.submitted) >= 2
   );
+  // A second, distinct signal: the requester told us exactly when they need
+  // this, and that date has arrived or passed while the request is still
+  // open. This catches urgency the "days since submission" heuristic can't
+  // see on its own.
+  const overdueNeeded = scopedRequests.filter(
+    (r) => r.neededBy && daysAgo(r.neededBy) >= 0 && !["Completed", "Closed", "Resolved", "Rejected", "Cancelled"].includes(r.status)
+  );
+  const atRiskMap = new Map();
+  agingUnassigned.forEach((r) => atRiskMap.set(r.id, { r, reasons: [`Unassigned for ${daysAgo(r.submitted)} days`] }));
+  overdueNeeded.forEach((r) => {
+    const reason = daysAgo(r.neededBy) === 0 ? `Needed today (${r.neededBy})` : `Needed ${daysAgo(r.neededBy)} day${daysAgo(r.neededBy) === 1 ? "" : "s"} ago (${r.neededBy})`;
+    const existing = atRiskMap.get(r.id);
+    if (existing) existing.reasons.push(reason);
+    else atRiskMap.set(r.id, { r, reasons: [reason] });
+  });
+  const atRiskList = Array.from(atRiskMap.values());
 
-  // Structural version of the same question: is there anyone actually
-  // staffed to work the assignment group a published service routes to?
-  // This is what actually explains why a group's queue never gets
-  // touched, rather than just noticing the symptom after the fact.
+  // Coverage Gaps stays tenant-wide on purpose — it's a staffing-health
+  // check, not a request-volume view, so narrowing it to the selected
+  // department would hide exactly the kind of gap a department manager
+  // most needs to see if it's a neighboring team.
   const todayIso = new Date().toISOString().slice(0, 10);
   const groupsInUse = Array.from(new Set(services.filter((s) => s.status === "published").map((s) => s.assignmentGroup)));
   const coverageGaps = groupsInUse.map((g) => {
     const owningTeam = TEAMS.find((t) => t.assignmentGroups.includes(g));
-    const activeCount = owningTeam ? memberships.filter((m) => m.teamId === owningTeam.id && isMembershipActive(m, todayIso)).length : 0;
+    const activeCount = owningTeam ? memberships.filter((m) => m.teamId === owningTeam.id && m.roleInTeam === "Agent" && isMembershipActive(m, todayIso)).length : 0;
     return { group: g, team: owningTeam, activeCount };
   }).filter((g) => g.activeCount === 0);
 
   function Tile({ icon: Icon, label, value, tab, accent, trend }) {
     return (
-      <button onClick={() => goTo("teamRequests", { prefill: { tab } })} className="text-left h-full">
+      <button onClick={() => goTo("teamRequests", { prefill: { tab, deptScope: managerTeamScope } })} className="text-left h-full">
         <Card className="p-3.5 hover:border-indigo-300 transition-colors h-full flex flex-col">
           <div className="flex items-center justify-between mb-2">
             <div className={`w-7 h-7 rounded-md flex items-center justify-center ${accent}`}>
@@ -2177,7 +2378,15 @@ function ManagerHomePage({ requests, goTo, services, memberships }) {
   return (
     <div>
       <h1 className="text-2xl font-semibold text-slate-900 tracking-tight mb-1">{greeting()}, {MANAGER_USER.name.split(" ")[0]}</h1>
-      <p className="text-sm text-slate-500 mb-6">{MANAGER_USER.dept} · {MANAGER_USER.location}</p>
+      <p className="text-sm text-slate-500 mb-4">{MANAGER_USER.dept} · {MANAGER_USER.location}</p>
+
+      <p className="text-sm font-semibold text-slate-700 mb-2">Department Reporting</p>
+      <Card className="p-3 mb-4 bg-slate-50">
+        <p className="text-xs text-slate-500 flex items-center gap-1.5">
+          <Info className="w-3.5 h-3.5 shrink-0" />
+          Scoped to {managerTeamScope === "combined" ? `all ${authorizedTeams.length} departments Rangga oversees` : (authorizedTeams.find((t) => t.id === managerTeamScope)?.name || "")} — change department from the sidebar. Demo note: one shared Manager identity previews every department; in production each has its own manager scoped by role, the same way Agent Workspace already works. Marketing isn't selectable yet — no live team or published services exist for it.
+        </p>
+      </Card>
 
       <p className="text-sm font-semibold text-slate-700 mb-3">This Month</p>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-1">
@@ -2206,12 +2415,12 @@ function ManagerHomePage({ requests, goTo, services, memberships }) {
 
       <p className="text-sm font-semibold text-slate-700 mb-3">Requests at Risk of Being Missed</p>
       <Card className="mb-4">
-        {agingUnassigned.length === 0 && <EmptyState icon={CheckSquare} title="Nothing aging" body="Every ready-to-work request has been picked up. Requests unassigned for 2+ days will show up here." />}
-        {agingUnassigned.map((r, i) => (
+        {atRiskList.length === 0 && <EmptyState icon={CheckSquare} title="Nothing at risk" body="Every ready-to-work request has been picked up, and nothing open has passed the date the requester said they needed it." />}
+        {atRiskList.map(({ r, reasons }, i) => (
           <button key={r.id} onClick={() => goTo("requestDetail", { requestId: r.id, prefill: { backTo: "teamRequests" } })} className={`w-full text-left flex items-center gap-4 px-5 py-4 hover:bg-slate-50 ${i !== 0 ? "border-t border-slate-100" : ""}`}>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-slate-900 truncate">{r.title}</p>
-              <p className="text-xs text-slate-500 mt-0.5">{r.id} · {r.service} · Unassigned for {daysAgo(r.submitted)} days</p>
+              <p className="text-xs text-slate-500 mt-0.5">{r.id} · {r.service} · {reasons.join(" · ")}</p>
             </div>
             <Badge label={r.status} />
             <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
@@ -2236,12 +2445,12 @@ function ManagerHomePage({ requests, goTo, services, memberships }) {
       </Card>
 
       <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-semibold text-slate-700">Pending Approvals</p>
+        <p className="text-sm font-semibold text-slate-700">Pending Approvals <span className="text-xs font-normal text-slate-400">(your direct reports, any department)</span></p>
         <button onClick={() => goTo("pendingApprovals")} className="text-xs text-indigo-700 hover:underline">View all</button>
       </div>
       <Card className="mb-8">
-        {pendingApproval.length === 0 && <EmptyState icon={CheckSquare} title="Nothing waiting on you" body="New approval requests from your team will show up here." />}
-        {pendingApproval.slice(0, 4).map((r, i) => (
+        {requests.filter((r) => r.status === "Pending Approval").length === 0 && <EmptyState icon={CheckSquare} title="Nothing waiting on you" body="New approval requests from your team will show up here." />}
+        {requests.filter((r) => r.status === "Pending Approval").slice(0, 4).map((r, i) => (
           <button key={r.id} onClick={() => goTo("requestDetail", { requestId: r.id, prefill: { backTo: "pendingApprovals" } })} className={`w-full text-left flex items-center gap-4 px-5 py-4 hover:bg-slate-50 ${i !== 0 ? "border-t border-slate-100" : ""}`}>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-slate-900 truncate">{r.title}</p>
@@ -2254,7 +2463,7 @@ function ManagerHomePage({ requests, goTo, services, memberships }) {
       </Card>
 
       <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-semibold text-slate-700">Team Requests</p>
+        <p className="text-sm font-semibold text-slate-700">Team Requests <span className="text-xs font-normal text-slate-400">(your direct reports, any department)</span></p>
         <button onClick={() => goTo("teamRequests")} className="text-xs text-indigo-700 hover:underline">View all</button>
       </div>
       <Card>
@@ -2294,8 +2503,10 @@ function PendingApprovalsPage({ requests, goTo }) {
   );
 }
 
-function TeamRequestsPage({ requests, goTo, prefill, services }) {
+function TeamRequestsPage({ requests, goTo, prefill, services, memberships }) {
   const [tab, setTab] = useState((prefill && prefill.tab) || "All");
+  const deptScope = prefill && prefill.deptScope;
+  const authorizedTeams = getAuthorizedTeams(MANAGER_USER.name, memberships);
   const tabs = ["All", "This Month", "Open", "In Progress", "Closed", "Pending Approval", "Rejected", "Incidents", "Service Requests", "SLA Met", "SLA Breached", "SLA At Risk", "Awaiting Confirmation"];
 
   function recordTypeOf(r) {
@@ -2303,7 +2514,17 @@ function TeamRequestsPage({ requests, goTo, prefill, services }) {
     return svc ? svc.recordType : "Service Request";
   }
 
+  function inDeptScope(r) {
+    if (!deptScope) return true;
+    const svc = services.find((s) => s.name === r.service);
+    if (!svc) return false;
+    if (deptScope === "combined") return authorizedTeams.some((t) => t.assignmentGroups.includes(svc.assignmentGroup));
+    const team = authorizedTeams.find((t) => t.id === deptScope);
+    return team ? team.assignmentGroups.includes(svc.assignmentGroup) : false;
+  }
+
   const filtered = requests.filter((r) => {
+    if (!inDeptScope(r)) return false;
     if (tab === "All") return true;
     if (tab === "This Month") return isThisMonth(r.submitted);
     if (tab === "Open") return !["Completed", "Closed", "Rejected", "Cancelled"].includes(r.status);
@@ -2320,9 +2541,11 @@ function TeamRequestsPage({ requests, goTo, prefill, services }) {
     return true;
   });
 
+  const deptLabel = deptScope === "combined" ? "all departments you oversee" : (authorizedTeams.find((t) => t.id === deptScope)?.name || "");
+
   return (
     <div>
-      <PageHeader title="Team Requests" subtitle="Every request submitted by your reports." />
+      <PageHeader title="Team Requests" subtitle={deptScope ? `Scoped to ${deptLabel}.` : "Every request submitted by your reports."} />
       <div className="flex gap-2 mb-4 flex-wrap">
         {tabs.map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`px-3 py-2 rounded-lg text-sm ${tab === t ? "bg-indigo-700 text-white" : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
@@ -2434,6 +2657,11 @@ function AgentQueuePage({ requests, goTo, services, agentIdentityName, membershi
               <p className="text-sm font-medium text-slate-900 truncate">{r.title}</p>
               <p className="text-xs text-slate-500 mt-0.5">{r.id} · {r.requester} · {r.service} · Assignee: {r.assignee}</p>
             </div>
+            {r.neededBy && (
+              <span className={`text-xs whitespace-nowrap ${daysAgo(r.neededBy) >= 0 ? "text-rose-600 font-medium" : "text-slate-400"}`}>
+                Needed {r.neededBy}
+              </span>
+            )}
             <Badge label={r.priority} />
             <Badge label={r.status} />
             <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
@@ -2837,6 +3065,7 @@ function ServiceFormPage({ initialData, services, onSave, onCancel }) {
   const [requiresResource, setRequiresResource] = useState(initialData.requiresResource || false);
   const [resourceType, setResourceType] = useState(initialData.resourceType || "");
   const [recordType, setRecordType] = useState(initialData.recordType || "Service Request");
+  const [producesDocument, setProducesDocument] = useState(initialData.producesDocument || false);
 
   const domainOptions = Array.from(new Set([...services.map((s) => s.domain), ...domainsFromLibrary()])).sort();
   const categoryOptions = Array.from(new Set([
@@ -2874,6 +3103,7 @@ function ServiceFormPage({ initialData, services, onSave, onCancel }) {
       notifyRequester, notifyAssignee,
       requiresResource, resourceType: requiresResource ? resourceType : "",
       recordType,
+      producesDocument,
       status: nextStatus,
     });
   }
@@ -2908,6 +3138,9 @@ function ServiceFormPage({ initialData, services, onSave, onCancel }) {
                   </button>
                 ))}
               </div>
+            </Field>
+            <Field label="Deliverable" hint="When on, an agent can't mark a request Resolved without attaching or linking the finished document — otherwise the requester has no way to get it back except a side-channel email.">
+              <Checkbox checked={producesDocument} onChange={(e) => setProducesDocument(e.target.checked)} label="This service's outcome is a document the requester needs back" />
             </Field>
             <Field label="Icon">
               <div className="grid grid-cols-7 sm:grid-cols-10 gap-2">
@@ -3113,6 +3346,7 @@ export default function App() {
   const [serviceFormData, setServiceFormData] = useState({});
   const [toast, setToast] = useState(null);
   const [agentIdentityName, setAgentIdentityName] = useState(AGENT_IDENTITIES[0].name);
+  const [managerTeamScope, setManagerTeamScope] = useState("combined");
   const [memberships, setMemberships] = useState(TEAM_MEMBERSHIPS_SEED);
 
   function goTo(nextView, opts = {}) {
@@ -3129,6 +3363,7 @@ export default function App() {
     setSelectedServiceId(null);
     setSelectedRequestId(null);
     if (nextPersona === "agent") setAgentIdentityName(agentName || AGENT_IDENTITIES[0].name);
+    if (nextPersona === "manager") setManagerTeamScope("combined");
     setView(nextPersona === "employee" ? "home" : nextPersona === "manager" ? "managerHome" : nextPersona === "agent" ? "agentQueue" : "serviceBuilder");
   }
 
@@ -3138,7 +3373,7 @@ export default function App() {
   }
 
   function updateRequestStatus(id, newStatus) {
-    setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: newStatus } : r)));
+    setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: newStatus, statusHistory: [...(r.statusHistory || []), { status: newStatus, at: nowTimestamp() }] } : r)));
     showToast(`${id} → ${newStatus}`);
   }
 
@@ -3146,10 +3381,22 @@ export default function App() {
   function rejectRequest(id) { updateRequestStatus(id, "Rejected"); }
   function requestMoreInfo(id) { updateRequestStatus(id, "Pending"); }
 
-  function assignToMe(id) {
-    setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, assignee: agentIdentityName, status: ["Submitted", "Approved"].includes(r.status) ? "Assigned" : r.status } : r)));
-    showToast(`${id} assigned to you`);
+  function reassignRequest(id, personName) {
+    setRequests((prev) => prev.map((r) => {
+      if (r.id !== id) return r;
+      const nextStatus = ["Submitted", "Approved"].includes(r.status) ? "Assigned" : r.status;
+      const historyChanged = nextStatus !== r.status;
+      return {
+        ...r,
+        assignee: personName,
+        status: nextStatus,
+        statusHistory: historyChanged ? [...(r.statusHistory || []), { status: nextStatus, at: nowTimestamp() }] : (r.statusHistory || []),
+      };
+    }));
+    showToast(personName === agentIdentityName ? `${id} assigned to you` : `${id} assigned to ${personName}`);
   }
+
+  function assignToMe(id) { reassignRequest(id, agentIdentityName); }
 
   function advanceStatus(id, newStatus) {
     updateRequestStatus(id, newStatus);
@@ -3157,6 +3404,11 @@ export default function App() {
 
   function closeRequest(id) { updateRequestStatus(id, "Closed"); }
   function reopenRequest(id) { updateRequestStatus(id, "In Progress"); }
+
+  function attachResponse(id, { name, link }) {
+    setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, responseAttachmentName: name || "", responseDocumentLink: link || "" } : r)));
+    showToast(`${id}: document sent to requester`);
+  }
 
   function addMembership(m) {
     setMemberships((prev) => [...prev, m]);
@@ -3174,11 +3426,13 @@ export default function App() {
     showToast(`SLA target updated for ${services.find((s) => s.id === serviceId)?.name || serviceId}`);
   }
 
-  function createRequest({ serviceId, title, priority, attachmentName, documentLink }) {
+  function createRequest({ serviceId, title, priority, attachmentName, documentLink, neededBy }) {
     const service = services.find((s) => s.id === serviceId);
     const id = `REQ-2026-0${150 + requests.length}`;
     const status = service && service.approvalRequired ? "Pending Approval" : "Submitted";
-    const newReq = { id, service: service ? service.name : "Service Request", title: title || (service ? service.name : "Request"), submitted: todayLabel(), status, sla: "On Track", assignee: "—", priority: priority || "Medium", requester: CURRENT_USER.name, attachmentName: attachmentName || "", documentLink: documentLink || "" };
+    const ts = nowTimestamp();
+    const statusHistory = status === "Pending Approval" ? [{ status: "Submitted", at: ts }, { status: "Pending Approval", at: ts }] : [{ status: "Submitted", at: ts }];
+    const newReq = { id, service: service ? service.name : "Service Request", title: title || (service ? service.name : "Request"), submitted: todayLabel(), status, sla: "On Track", assignee: "—", priority: priority || "Medium", requester: CURRENT_USER.name, attachmentName: attachmentName || "", documentLink: documentLink || "", neededBy: neededBy || "", statusHistory };
     setRequests((prev) => [newReq, ...prev]);
     showToast(`${newReq.id} submitted successfully`);
     return newReq;
@@ -3240,12 +3494,21 @@ export default function App() {
   }
 
   if (view === "login") {
-    return <LoginScreen onSignIn={() => goTo("home")} onQuickSignIn={switchPersona} />;
+    return (
+      <>
+        <LoginScreen onSignIn={() => goTo("home")} onQuickSignIn={switchPersona} />
+        <ReadinessWidget
+          project="nexserve"
+          context={buildContext({ route: "login" })}
+          collectorEnabled={COLLECTOR_ENABLED}
+        />
+      </>
+    );
   }
 
   return (
     <div className="flex bg-slate-50 min-h-screen font-sans">
-      <Sidebar view={view} goTo={goTo} onSignOut={() => goTo("login")} persona={persona} switchPersona={switchPersona} agentIdentityName={agentIdentityName} setAgentIdentityName={setAgentIdentityName} />
+      <Sidebar view={view} goTo={goTo} onSignOut={() => goTo("login")} persona={persona} switchPersona={switchPersona} agentIdentityName={agentIdentityName} setAgentIdentityName={setAgentIdentityName} managerTeamScope={managerTeamScope} setManagerTeamScope={setManagerTeamScope} memberships={memberships} />
       <div className="flex-1 min-w-0">
         <TopHeader view={view} persona={persona} requests={requests} services={services} agentIdentityName={agentIdentityName} memberships={memberships} />
         <div className="max-w-5xl mx-auto px-6 py-8">
@@ -3267,9 +3530,11 @@ export default function App() {
               onReject={rejectRequest}
               onRequestInfo={requestMoreInfo}
               onAssignToMe={assignToMe}
+              onReassign={reassignRequest}
               onAdvanceStatus={advanceStatus}
               onCloseRequest={closeRequest}
               onReopenRequest={reopenRequest}
+              onAttachResponse={attachResponse}
               onToast={showToast}
             />
           )}
@@ -3278,9 +3543,9 @@ export default function App() {
           {view === "vehicleBooking" && <VehicleBookingPage prefill={prefill} goTo={goTo} onCreateBooking={createBooking} onCreateRequest={createRequest} />}
           {view === "approvals" && <ApprovalsPage />}
           {view === "knowledge" && <KnowledgePage />}
-          {view === "managerHome" && <ManagerHomePage requests={requests} goTo={goTo} services={services} memberships={memberships} />}
+          {view === "managerHome" && <ManagerHomePage requests={requests} goTo={goTo} services={services} memberships={memberships} managerTeamScope={managerTeamScope} setManagerTeamScope={setManagerTeamScope} />}
           {view === "pendingApprovals" && <PendingApprovalsPage requests={requests} goTo={goTo} />}
-          {view === "teamRequests" && <TeamRequestsPage requests={requests} goTo={goTo} prefill={prefill} services={services} />}
+          {view === "teamRequests" && <TeamRequestsPage requests={requests} goTo={goTo} prefill={prefill} services={services} memberships={memberships} />}
           {view === "agentQueue" && <AgentQueuePage requests={requests} goTo={goTo} services={services} agentIdentityName={agentIdentityName} memberships={memberships} />}
           {view === "analytics" && <AnalyticsPage requests={requests} services={services} />}
           {view === "slaPolicy" && <SLAPolicyPage slaPolicy={slaPolicy} onUpdateTarget={updateSlaTarget} services={services} />}
@@ -3296,6 +3561,12 @@ export default function App() {
         </div>
       </div>
       <Toast message={toast} />
+      <ReadinessWidget
+        project="nexserve"
+        context={buildContext({ persona, personaUser: getPersonaUser(persona, agentIdentityName), route: view })}
+        onNavigate={(route) => goTo(route)}
+        collectorEnabled={COLLECTOR_ENABLED}
+      />
     </div>
   );
 }

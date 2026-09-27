@@ -3,11 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "NexServe — Service Desk prototype (Vite host for ServiceDesk.jsx)",
+  "description": "NexServe \u2014 Service Desk prototype (Vite host for ServiceDesk.jsx)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gen:knowledge": "node scripts/gen-knowledge.mjs",
+    "test:widget": "node src/widget/core/framework-agnostic.smoke.mjs && node src/widget/core/store.smoke.mjs && node src/widget/core/collector.smoke.mjs && node src/widget/knowledge.smoke.mjs && node src/widget/guidance.smoke.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.469.0",
